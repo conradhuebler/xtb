@@ -108,16 +108,16 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       if (pr) then
          write(env%unit,*)
          write(env%unit,'(10x,"entering GFN-FF setup routine... ",i0)') mol%n
-      endif
 
-      write(env%unit,*)
-      write(env%unit,'(10x,"==================== Thresholds ====================")')
-      write(env%unit,'(10x,"CN  :",f12.5)')   cnthr
-      write(env%unit,'(10x,"rep :",f12.5)')   repthr
-      write(env%unit,'(10x,"disp:",f12.5)')   dispthr
-      write(env%unit,'(10x,"HB1 :",f12.5)')   hbthr1
-      write(env%unit,'(10x,"HB2 :",f12.5)')   hbthr2
-      write(env%unit,*)
+         write(env%unit,*)
+         write(env%unit,'(10x,"==================== Thresholds ====================")')
+         write(env%unit,'(10x,"CN  :",f12.5)')   cnthr
+         write(env%unit,'(10x,"rep :",f12.5)')   repthr
+         write(env%unit,'(10x,"disp:",f12.5)')   dispthr
+         write(env%unit,'(10x,"HB1 :",f12.5)')   hbthr1
+         write(env%unit,'(10x,"HB2 :",f12.5)')   hbthr2
+         write(env%unit,*)
+      endif
 
       allocate( rab(mol%n*(mol%n+1)/2), source = 0.0d0 )
       allocate( cn(mol%n), source = 0.0d0 )
@@ -155,28 +155,31 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       do i=1,mol%n
          niel(mol%at(i))=niel(mol%at(i))+1
       enddo
-
-      write(env%unit,'(10x,"Pauling EN used:")')
-      do i=1,86
-         if(niel(i).gt.0) write(env%unit,'(10x,"Z :",i2,"  EN :",f6.2)') i,param%en(i)
-      enddo
-
+      if (pr) then
+        write(env%unit,'(10x,"Pauling EN used:")')
+        do i=1,86
+            if(niel(i).gt.0) write(env%unit,'(10x,"Z :",i2,"  EN :",f6.2)') i,param%en(i)
+        enddo
+      endif
       dum = sqrt(sum(efield**2))
-      write(env%unit,'(10x,"electric field strengths (au):",f6.3)') dum
+      if (pr) then
+        write(env%unit,'(10x,"electric field strengths (au):",f6.3)') dum
 !     alp = alp *(1.+0.0*dum)
 
-      write(env%unit,*)
-      write(env%unit,'(10x," ------------------------------------------------- ")')
-      write(env%unit,'(10x,"|           Force Field Initialization            |")')
-      write(env%unit,'(10x," ------------------------------------------------- ")')
-      write(env%unit,*)
+        write(env%unit,*)
+        write(env%unit,'(10x," ------------------------------------------------- ")')
+        write(env%unit,'(10x,"|           Force Field Initialization            |")')
+        write(env%unit,'(10x," ------------------------------------------------- ")')
+        write(env%unit,*)
+      endif
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ! distances and bonds
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
       topo%xyze0 = mol%xyz ! initial geom
-
-      write(env%unit,'(10x,"distances ...")')
+      if (pr) then
+        write(env%unit,'(10x,"distances ...")')
+      endif
       pbo   = 0
       rab   = 0
       sqrab = 0
@@ -224,9 +227,10 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
 !111   continue
 !  do the loop only if factor is significant
    do while (qloop_count.lt.2.and.gen%rqshrink.gt.1.d-3)
-
-      write(env%unit,'(10x,"----------------------------------------")')
-      write(env%unit,'(10x,"generating topology and atomic info file ...")')
+      if (pr) then
+        write(env%unit,'(10x,"----------------------------------------")')
+        write(env%unit,'(10x,"generating topology and atomic info file ...")')
+      endif
       call gfnff_neigh(env,makeneighbor,mol%n,mol%at,mol%xyz,rab,gen%rqshrink, &
          & gen%rthr,gen%rthr2,gen%linthr,mchar,topo%hyb,itag,nbm,nbf,param,topo)
 
@@ -382,10 +386,13 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ! topology based charges
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
+        if (pr) then
       write(env%unit,'(10x,"pair mat ...")')
+      endif
       call nbondmat(mol%n,topo%nb,topo%bpair)  ! get number of cov. bonds between atoms up to 4 bonds
+      if (pr) then
       write(env%unit,'(10x,"computing topology distances matrix with Floyd-Warshall algo ...")')
+      endif
       allocate( rabd(mol%n,mol%n), source = 0.0e0_sp)
       rabd = rabd_cutoff
 !     determine topology distances by Floyd-Warshall algo
@@ -420,11 +427,13 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       deallocate(rabd)
 
       frag_charges_known=.false.
+      if (pr) then
       write(env%unit,'(10x,"making topology EEQ charges ...")')
+      endif
       if(topo%nfrag.le.1) then                           ! nothing is known
 !     first check for fragments
       call mrecgff(mol%n,nbf,topo%nfrag,topo%fraglist)
-      write(env%unit,'(10x,"#fragments for EEQ constrain: ",i0)') topo%nfrag
+      if(pr) write(env%unit,'(10x,"#fragments for EEQ constrain: ",i0)') topo%nfrag
 !     read QM info if it exists
       call open_file(ich, 'charges', 'r')
       if (ich /= -1) then
@@ -449,7 +458,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
                call env%warning("Rejecting external charges input due to missmatch", source)
             else
                topo%qfrag=dnint(qtmp)
+               if (pr) then
                write(env%unit,'(10x,"fragment charges from <charges> :",10F7.3)') topo%qfrag(1:topo%nfrag)
+               endif
             end if
          else
             call env%warning("Could not initialize fragment charges from file", source)
@@ -465,9 +476,11 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          do i=1,mol%n
             itmp(topo%fraglist(i))=itmp(topo%fraglist(i))+1
          enddo
+         if (pr) then
          do i=1,topo%nfrag
             write(env%unit,*)i,itmp(i)
          enddo
+         endif
          call env%error('fragment charge input required', source)
          return
       endif
@@ -476,7 +489,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          topo%qfrag(2:topo%nfrag)=0
       endif
       if(topo%nfrag.eq.2.and.mol%chrg.ne.0.and.sum(topo%qfrag(2:topo%nfrag)).gt.999) then
+      if (pr) then
          write(env%unit,*) 'trying auto detection of charge on 2 fragments:'
+         endif
          topo%qfrag(1)=0
          topo%qfrag(2)=mol%chrg
          call goedeckera(env,mol%n,mol%at,topo%nb,rtmp,topo%qa,dum1,topo)
@@ -497,11 +512,15 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
             topo%qfrag(1)=0
             topo%qfrag(2)=mol%chrg
          endif
+         if (pr) then
          write(env%unit,*) 'dEes      :',dum1-dum2
          write(env%unit,*) 'charge 1/2:',topo%qfrag(1:2)
+         endif
       endif
       else if (allocated(mol%pdb)) then ! frag_charges_known
+      if (pr) then
          write(env%unit,'(10x,"#fragments for EEQ constrain from pdb file: ",i0)') topo%nfrag
+         endif
          frag_charges_known=.true.
       endif
 
@@ -625,7 +644,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ! get ring info (smallest ring size)
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    if (pr) then
       write(env%unit,'(10x,"rings ...")')
+      endif
 !$omp parallel default(none) private(i,cr,sr) shared(mol,nbm,cring,sring)
 !$omp do
       do i=1,mol%n
@@ -671,8 +692,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          call env%error('overflow in ini', source)
          return
       endif
+      if (pr) then
       write(env%unit,'(10x,"# BATM",3x,i0)') topo%nbatm
-
+    endif
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ! non bonded pair exponents
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -756,8 +778,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
             topo%hbatHl(topo%nathbH)=i
          endif
       enddo
+      if (pr) then
       write(env%unit,'(10x,"# H in HB",3x,i0)') topo%nathbH
-
+    endif
       topo%nathbAB=0
       do i=1,mol%n
          if(mol%at(i).eq. 6.and.piadr2(i).eq.0) cycle ! C sp or sp2 pi
@@ -825,7 +848,9 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
       if(picount.gt.0) then
+      if (pr) then
       write(env%unit,'(10x,"doing iterative Hueckel for ",i0," subsystem(s) ...")') picount
+      endif
       allocate( pispop(picount),pisip(picount),pisea(picount), source = 0.0d0 )
       allocate( piel(mol%n), source = 0 )
       itmp = 0 ! save pi atom info
@@ -965,7 +990,7 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          endif
       enddo
 
-!     if(pr)then
+     if(pr)then
       write(env%unit,*)
       write(env%unit,'(2x,"atom   neighbors  erfCN metchar sp-hybrid imet pi  qest     coordinates")')
       do i=1,mol%n
@@ -975,16 +1000,16 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          write(env%unit,'(i5,2x,a2,3x,i4,3x,f5.2,2x,f5.2,8x,i2,3x,i2,3x,i2,2x,f6.3,3f12.6)') &
      &             i,mol%sym(i),topo%nb(20,i),cn(i),mchar(i),j,imetal(i),piadr(i),topo%qa(i),mol%xyz(1:3,i)
       enddo
-
+    endif
 !     compute fragments and charges for output (check for CT)
 !     call mrecgff(mol%n,topo%nb,nmol,piadr3)
 !     write(env%unit,*) 'Nmol',nmol
       if(pr)then
-      write(env%unit,'(/,''molecular fragment  # atoms  topo charge'')')
-      do i=1,topo%nfrag
-         dum=0
+        write(env%unit,'(/,''molecular fragment  # atoms  topo charge'')')
+        do i=1,topo%nfrag
+           dum=0
            m=0
-         do k=1,mol%n
+            do k=1,mol%n
             if(topo%fraglist(k).eq.i) then
                m=m+1
                dum=dum+topo%qa(k)
@@ -1006,13 +1031,13 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
 
       topo%nbond_vbond = topo%nbond
       allocate( topo%vbond(3,topo%nbond), source = 0.0d0 )
-
-      write(env%unit,*)
-      write(env%unit,'(10x,"#atoms :",3x,i0)') mol%n
-      write(env%unit,'(10x,"#bonds :",3x,i0)') topo%nbond
       if(pr)then
-      write(env%unit,*)
-      write(env%unit,*) 'bond atoms        type  in ring    R      R0    piBO    fqq  kbond(tot)  alp'
+          write(env%unit,*)
+          write(env%unit,'(10x,"#atoms :",3x,i0)') mol%n
+          write(env%unit,'(10x,"#bonds :",3x,i0)') topo%nbond
+
+          write(env%unit,*)
+          write(env%unit,*) 'bond atoms        type  in ring    R      R0    piBO    fqq  kbond(tot)  alp'
       endif
 
       do i=1,topo%nbond
@@ -1294,10 +1319,10 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          enddo
       enddo
 
-      write(env%unit,'(10x,"#angl  :",3x,i0)') topo%nangl
       if(pr)then
-      write(env%unit,*)
-      write(env%unit,*) 'angle atoms        phi0    phi      FC  pi rings'
+          write(env%unit,'(10x,"#angl  :",3x,i0)') topo%nangl
+          write(env%unit,*)
+          write(env%unit,*) 'angle atoms        phi0    phi      FC  pi rings'
       endif
 
       topo%nangl_alloc = topo%nangl
@@ -1827,8 +1852,8 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          if(pr)write(env%unit,'(4i5,7x,3f8.3)') i,jj,kk,ll,topo%vtors(1,topo%ntors)*180./pi,phi*180./pi,topo%vtors(2,topo%ntors)
       enddo
 
-      write(env%unit,'(10x,"#tors  :",3x,i0)') topo%ntors
-      write(env%unit,'(10x,"#nmol  :",3x,i0)') topo%nfrag
+      if(pr) write(env%unit,'(10x,"#tors  :",3x,i0)') topo%ntors
+      if(pr) write(env%unit,'(10x,"#nmol  :",3x,i0)') topo%nfrag
 
 ! all done
 
@@ -1840,7 +1865,7 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       !   nsystem=1
       !endif
 
-      write(env%unit,'(10x,"#optfrag :",3x,i0)') topo%nfrag
+      if(pr) write(env%unit,'(10x,"#optfrag :",3x,i0)') topo%nfrag
       !write(env%unit,*) '#optfrag :',nsystem
 
       if(pr)then

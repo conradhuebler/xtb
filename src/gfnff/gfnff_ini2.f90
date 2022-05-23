@@ -129,11 +129,11 @@ subroutine gfnff_neigh(env,makeneighbor,natoms,at,xyz,rab,fq,f_in,f2_in,lintr,mc
 
 ! tag atoms in nb(19,i) if they belong to a cluster (which avoids the ring search)
       do i=1,natoms
-         if(nbf(20,i).eq.0.and.param%group(at(i)).ne.8)then
-            write(env%unit,'(''!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'')')
-            write(env%unit,'(''  warning: no bond partners for atom'',i4)')i
-            write(env%unit,'(''!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'')')
-         endif
+     !   if(nbf(20,i).eq.0.and.param%group(at(i)).ne.8)then
+     !      write(env%unit,'(''!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'')')
+     !      write(env%unit,'(''  warning: no bond partners for atom'',i4)')i
+     !      write(env%unit,'(''!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'')')
+     !   endif
          if(at(i).lt.11.and.nbf(20,i).gt.2)then
             do k=1,nbf(20,i)
                kk=nbf(k,i)
