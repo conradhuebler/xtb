@@ -100,13 +100,51 @@ module xtb_setparam
    ! interface mode
    integer,parameter :: p_pcem_legacy = 1
    integer,parameter :: p_pcem_orca = 2
+   
+   type oniom_settings
+      
+      !> inner region charge
+      integer  :: innerchrg
+      
+      !> cut high order(>1) covalent bonds
+      logical :: ignore_topo = .false.
+      
+      !> derived mode
+      logical :: derived = .false.
+      
+      !> dummy execution to check inner region geo and chrg
+      logical :: cut_inner = .false.
+
+      !> explicite charges (inner:outer)
+      logical :: fixed_chrgs= .false.
+      
+      !> mute external output (ORCA,TURBOMOLE)
+      logical :: silent = .false.
+      
+      !> print optimization logs for inner region calculations
+      logical :: logs = .false.
+
+      !> if saturate outer region
+      logical :: outer = .false.
+      
+      !> log units
+      integer:: ilog1, ilog2
+  
+   end type oniom_settings
 
    type qm_external
+      
       character(len=:),allocatable :: path
       character(len=:),allocatable :: executable
       character(len=:),allocatable :: input_file
       character(len=:),allocatable :: input_string
+      
+      !> if input_file exist
       logical :: exist
+      
+      !> special case of the oniom embedding 
+      logical :: oniom=.false.
+
    end type qm_external
 
    integer, parameter :: p_ext_vtb       = -1
@@ -145,6 +183,7 @@ module xtb_setparam
    type :: TSet
    integer  :: gfn_method = -1
    integer  :: maxscciter = 250
+   real(wp) :: acc = 1.0_wp
    logical  :: newdisp = .true.
    logical  :: solve_scc = .true.
    logical  :: periodic = .false.
@@ -238,6 +277,7 @@ module xtb_setparam
    logical  :: shake_md = .true.
    logical  :: xhonly = .true.
    logical  :: honly = .false.
+   logical :: forcewrrestart = .false.
 
 !! ------------------------------------------------------------------------
 !  target rmsd value for bhess run in Ångström
@@ -303,6 +343,8 @@ module xtb_setparam
    real(wp) :: cube_step = 0.4_wp
 !  density matrix neglect threshold
    real(wp) :: cube_pthr = 0.05_wp
+!  cube boundary offset
+   real(wp) :: cube_boff = 3.0_wp
 !! ------------------------------------------------------------------------
 !  PRINTOUT
 !! ------------------------------------------------------------------------
@@ -390,7 +432,13 @@ module xtb_setparam
    real(wp) :: ex_open ! set to 0.5/-0.5 in .xtbrc, respectively
 
 !! ------------------------------------------------------------------------
+!  ONIOM
+!! ------------------------------------------------------------------------
+   type(oniom_settings) :: oniom_settings
 
+!! ------------------------------------------------------------------------
+!  External settings
+!! ------------------------------------------------------------------------
    type(qm_external) :: ext_driver
    type(qm_external) :: ext_orca
    type(qm_external) :: ext_turbo
@@ -400,6 +448,7 @@ module xtb_setparam
 !  information about molecule
 !! ------------------------------------------------------------------------
    integer  :: ichrg = 0
+   logical  :: clichrg = .false.
    integer  :: nalphabeta = 0
 
 !  cannot be set by .xtbrc/setblock
@@ -431,8 +480,11 @@ module xtb_setparam
 
 !  character(len=80) :: inputname = ''
    character(len= 4) :: pgroup = 'C1  '
-
+!! ------------------------------------------------------------------------
+    
    end type
+   
+
    type(TSet) :: set
 
    type(env_setvar) :: xenv
@@ -441,6 +493,7 @@ module xtb_setparam
    character(len=:),allocatable :: commentline
 
 contains
+
 
 subroutine initrand
    implicit none

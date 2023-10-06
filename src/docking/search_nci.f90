@@ -765,7 +765,7 @@ contains
 
       call doubles(ll, ndim, 3.0d0, 0.1d0, found)    ! Sorting out doubles
       call sort6(ll, found)
-      if(debug) call wrc3('xtbiff_best_before_gen.xyz', n1, n2, at1, at2, xyz1, xyz2, 1, found)
+      if(debug) call wrc3('best_before_gen.xyz', n1, n2, at1, at2, xyz1, xyz2, 1, found)
 
       write (*, *)
       write (*, *) '  Interaction energy of lowest structures so far in kcal/mol:'
@@ -780,7 +780,7 @@ contains
 !      end do
 
       if (debug) then
-         call wrc2('xtbiff_genstart.xyz', 1, n1, n2, at1, at2, xyz1, xyz2,&
+         call wrc2('genstart.xyz', 1, n1, n2, at1, at2, xyz1, xyz2,&
                    &maxparent, found)
       end if
 
@@ -802,9 +802,9 @@ contains
             do j = 1, maxparent
                ii = (i - 1)*maxparent + j
                call crossover(0.00d0, f)
-              displ(1:6) = found(1:6, i)*f(1:6) + found(1:6, j)*(1.0d0 - f(1:6))
+               displ(1:6) = found(1:6, i)*f(1:6) + found(1:6, j)*(1.0d0 - f(1:6))
                if (i .ne. j) call rand6(0.5d0, 1.0d0, 1.0d0, displ)   ! mutation only on childs
-          call iff_e(env, n, n1, n2, at1, at2, neigh, xyz1, xyz2, q1, q2, c6ab,&
+               call iff_e(env, n, n1, n2, at1, at2, neigh, xyz1, xyz2, q1, q2, c6ab,&
                                &z1, z2, nl1, nl2, l1, l2, cl1, cl2,&
                                &qdr1, qdr2,&
                                &cn1, cn2, alp1, alp2, alpab, qct1, qct2,&
@@ -821,7 +821,9 @@ contains
          call sort6(ii, found2)
 
          found = found2
-         if (debug) call wrc3('xtbiff_best_after_gen.xyz', n1, n2, at1, at2, xyz1, xyz2, 1, found)
+         if (debug) call wrc2('structures_after_gen.xyz', 0, n1, n2, at1, at2, xyz1,&
+         & xyz2, n_opt, found)
+         call wrc3('best_after_gen.xyz', n1, n2, at1, at2, xyz1, xyz2, 1, found)
 
          av = sum(found(7, 1:maxparent))/float(maxparent)
          sig = 0
@@ -852,9 +854,7 @@ contains
 
 !-------------------------------------------------------------- final optimization
 
-      if (debug) then
-         call open_file(iopt, 'optimizing_structures.xyz', 'w')
-      end if
+      call open_file(iopt, 'optimized_structures.xyz', 'w')
       call open_file(itemp, 'opt_tmp', 'w')
       tmp_unit = env%unit
       env%unit = itemp
@@ -907,22 +907,17 @@ contains
          end do
          final_e(icycle) = etot
 
-         if (debug) then
-            write (iopt, '(i0)') comb%n
-            write (iopt, '(f20.14)') etot
-            do j = 1, comb%n
-               write (iopt, '(a4,2x,3f20.14)') comb%sym(j), comb%xyz(:, j)*autoang
-            end do
-         end if
+         write (iopt, '(i0)') comb%n
+         write (iopt, '(f20.14)') etot
+         do j = 1, comb%n
+            write (iopt, '(a4,2x,3f20.14)') comb%sym(j), comb%xyz(:, j)*autoang
+         end do
          found(7, i) = etot
       end do
 
       env%unit = tmp_unit
       call remove_file(itemp)
-
-      if (debug) then
-         call close_file(iopt)
-      end if
+      call close_file(iopt)
 
       !> Include pocket structure if present
       if (pocket_grid) then
@@ -948,6 +943,8 @@ contains
          end do
       end do
       call close_file(ifinal)
+
+      call remove_file(iopt)
 
       call open_file(ifinal, 'best.xyz', 'w')
       write (ifinal, '(i0)') comb%n

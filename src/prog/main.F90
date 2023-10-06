@@ -90,8 +90,12 @@ module xtb_prog_main
    use xtb_kopt
    use xtb_iff_iffprepare, only : prepare_IFF
    use xtb_iff_data, only : TIFFData
-   use xtb_oniom, only : oniom_input, TOniomCalculator
+   use xtb_oniom, only : oniom_input, TOniomCalculator, calculateCharge
+   use xtb_vertical, only : vfukui
    use xtb_tblite_calculator, only : TTBLiteCalculator, TTBLiteInput, newTBLiteWavefunction
+   use xtb_solv_cpx, only: TCpcmx
+   use xtb_dipro, only: get_jab,jab_input
+   
    implicit none
    private
 
@@ -114,12 +118,14 @@ subroutine xtbMain(env, argParser)
 !  use some wrapper types to bundle information together
    type(TMolecule) :: mol
    type(scc_results) :: res
-   class(TCalculator), allocatable :: calc
+   class(TCalculator), allocatable :: calc, cpxcalc
    type(freq_results) :: fres
    type(TRestart) :: chk
    type(chrg_parameter) :: chrgeq
    type(TIFFData), allocatable :: iff_data
    type(oniom_input) :: oniom
+   type(jab_input) :: dipro
+   type(TCpcmx) :: cpx
    type(TTBLiteInput) :: tblite
 !  store important names and stuff like that in FORTRAN strings
    character(len=:),allocatable :: fname    ! geometry input file
@@ -147,6 +153,7 @@ subroutine xtbMain(env, argParser)
    real(wp),allocatable :: cn  (:)
    real(wp),allocatable :: sat (:)
    real(wp),allocatable :: g   (:,:)
+   real(wp),allocatable :: fukui   (:,:)
    real(wp) :: vec3(3)
    type(TxTBParameter) :: globpar
    real(wp),allocatable :: dcn (:,:,:)
@@ -161,6 +168,7 @@ subroutine xtbMain(env, argParser)
 
 !! ------------------------------------------------------------------------
    logical :: struc_conversion_done = .false.
+   logical :: anyopt
 
 !! ========================================================================
 !  debugging variables for numerical gradient
@@ -178,12 +186,11 @@ subroutine xtbMain(env, argParser)
    integer  :: nFiles, iFile
    integer  :: rohf,err
    real(wp) :: dum5,egap,etot,ipeashift
-   real(wp) :: zero,t0,t1,w0,w1,acc,etot2,g298
+   real(wp) :: zero,t0,t1,w0,w1,etot2,g298
    real(wp) :: one,two
    real(wp) :: ea,ip
-   real(wp) :: vomega,vfukui
-   real(wp),allocatable :: f_plus(:), f_minus(:)
-   type(TRestart) :: wf_p, wf_m
+   real(wp) :: vomega
+   real(wp) :: energy_gas
    parameter (zero=0.0_wp)
    parameter (one =1.0_wp)
    parameter (two =2.0_wp)
@@ -209,8 +216,15 @@ subroutine xtbMain(env, argParser)
 
    ! ------------------------------------------------------------------------
    !> read the command line arguments
-   call parseArguments(env, argParser, xcontrol, fnv, acc, lgrad, &
-      & restart, gsolvstate, strict, copycontrol, coffee, printTopo, oniom, tblite)
+   
+   call parseArguments(env, argParser, xcontrol, fnv, lgrad, &
+      & restart, gsolvstate, strict, copycontrol, coffee, printTopo, oniom, dipro, tblite)
+
+   !> Spin-polarization is only available in the tblite library
+   if(set%mode_extrun.ne.p_ext_tblite .and. tblite%spin_polarized) then
+     call env%error("Spin-polarization is only available with the tblite library! Try --tblite", source)
+   endif
+
 
    nFiles = argParser%countFiles()
    select case(nFiles)
@@ -237,15 +251,20 @@ subroutine xtbMain(env, argParser)
       end if
    end if
 
-   call env%checkpoint("Command line argument parsing failed")
+   anyopt = ((set%runtyp.eq.p_run_opt).or.(set%runtyp.eq.p_run_ohess).or. &
+      &   (set%runtyp.eq.p_run_omd).or.(set%runtyp.eq.p_run_screen).or. &
+      &   (set%runtyp.eq.p_run_metaopt))
+   
+   if (allocated(set%solvInput%cpxsolvent) .and. anyopt) call env%terminate("CPCM-X not implemented for geometry optimization. &
+      &Please use another solvation model for optimization instead.")
 
+   call env%checkpoint("Command line argument parsing failed")
 
    ! ------------------------------------------------------------------------
    !> read the detailed input file
    call rdcontrol(xcontrol, env, copy_file=copycontrol)
 
    call env%checkpoint("Reading '"//xcontrol//"' failed")
-
 
    ! ------------------------------------------------------------------------
    !> read dot-Files before reading the rc and after reading the xcontrol
@@ -289,7 +308,6 @@ subroutine xtbMain(env, argParser)
 
    call env%checkpoint("Reading multiplicity from file failed")
 
-
    ! ------------------------------------------------------------------------
    !> read the xtbrc if you can find it (use rdpath directly instead of xfind)
    call rdpath(env%xtbpath, p_fname_rc, xrc, exist)
@@ -299,7 +317,6 @@ subroutine xtbMain(env, argParser)
       call env%checkpoint("Reading '"//xrc//"' failed")
    endif
 
-
    ! ------------------------------------------------------------------------
    !> FIXME: some settings that are still not automatic
    !> Make sure GFN0-xTB uses the correct exttyp
@@ -307,7 +324,7 @@ subroutine xtbMain(env, argParser)
    rohf = 1 ! HS default
    egap = 0.0_wp
    ipeashift = 0.0_wp
-
+ 
 
    ! ========================================================================
    !> no user interaction up to now, time to show off!
@@ -320,7 +337,6 @@ subroutine xtbMain(env, argParser)
    call citation(env%unit)
    !> print current time
    call prdate('S')
-
 
    ! ------------------------------------------------------------------------
    !> get molecular structure
@@ -340,16 +356,15 @@ subroutine xtbMain(env, argParser)
 
       ! Special CT input file case
       if (mol%chrg /= 0.0_wp) then
-         if (set%ichrg == 0) then
-            set%ichrg = nint(mol%chrg)
-         else
+         if (set%clichrg) then
             call env%warning("Charge in sdf/mol input was overwritten", source)
+         else
+            set%ichrg = nint(mol%chrg)
          end if
       end if
 
       call env%checkpoint("reading geometry input '"//fname//"' failed")
    endif
-
 
    ! ------------------------------------------------------------------------
    !> initialize the global storage
@@ -392,12 +407,11 @@ subroutine xtbMain(env, argParser)
    endif
 
    mol%chrg = real(set%ichrg, wp)
+      !! To assign charge 
    mol%uhf = set%nalphabeta
    call initrand
 
    call setup_summary(env%unit,mol%n,fname,xcontrol,chk%wfn,xrc)
-
-   if(set%fit) acc=0.2 ! higher SCF accuracy during fit
 
    ! ------------------------------------------------------------------------
    !> 2D => 3D STRUCTURE CONVERTER
@@ -478,6 +492,7 @@ subroutine xtbMain(env, argParser)
 
    ! ------------------------------------------------------------------------
    !> Print the method header and select the parameter file
+
    if (.not.allocated(fnv)) then
       select case(set%runtyp)
       case default
@@ -503,7 +518,7 @@ subroutine xtbMain(env, argParser)
             fnv=xfind(p_fname_param_gfn0)
          endif
          if(set%gfn_method.eq.1) then
-            fnv=xfind(p_fname_param_ipea)
+            fnv=xfind(p_fname_param_gfn1)
          endif
          if(set%gfn_method.eq.2) then
             fnv=xfind(p_fname_param_gfn2)
@@ -521,12 +536,11 @@ subroutine xtbMain(env, argParser)
 
    ! ------------------------------------------------------------------------
    !> Obtain the parameter data
-   call newCalculator(env, mol, calc, fnv, restart, acc, oniom, iff_data, tblite)
+   call newCalculator(env, mol, calc, fnv, restart, set%acc, oniom, iff_data, tblite)
    call env%checkpoint("Could not setup single-point calculator")
 
    call initDefaults(env, calc, mol, gsolvstate)
    call env%checkpoint("Could not setup defaults")
-
 
    ! ------------------------------------------------------------------------
    !> initial guess, setup wavefunction
@@ -590,11 +604,33 @@ subroutine xtbMain(env, argParser)
       select type(xtb => calc%real_low)
       type is(TxTBCalculator)
          call chk%wfn%allocate(mol%n,xtb%basis%nshell,xtb%basis%nao)
+         call newWavefunction(env,mol,xtb,chk)
+            !! assigns only partial charges q and shell charges
          if (restart) then ! only in first run
             call readRestart(env,chk%wfn,'xtbrestart',mol%n,mol%at,set%gfn_method,exist,.true.)
          endif
-      end select
+      end select 
+      if (.not.set%oniom_settings%fixed_chrgs) then
+         set%oniom_settings%innerchrg = calculateCharge(calc,env,mol,chk)
+      endif
+  
+
    end select
+
+   !-------------------------------------------------------------------------
+   !> DIPRO calculation of coupling integrals for dimers
+    if (dipro%diprocalc) then 
+       call start_timing(11)
+       call get_jab(env,tblite,mol,splitlist,dipro)
+       call env%checkpoint("Something in your DIPRO calculation went wrong.")
+       call stop_timing_run
+       call stop_timing(11)
+       write(*,'(A)') "----------------------------------------------------------"
+       call prdate('E')
+       write(*,'(A)') "----------------------------------------------------------"
+       call prtiming(11,'dipro')
+       call terminate(0)
+    end if        
 
    ! ========================================================================
    !> the SP energy which is always done
@@ -622,7 +658,7 @@ subroutine xtbMain(env, argParser)
    if (set%runtyp.eq.p_run_bhess) then
       call set_metadynamic(metaset,mol%n,mol%at,mol%xyz)
       call get_kopt (metaset,env,restart,mol,chk,calc,egap,set%etemp,set%maxscciter, &
-         & set%optset%maxoptcycle,set%optset%optlev,etot,g,sigma,acc)
+         & set%optset%maxoptcycle,set%optset%optlev,etot,g,sigma,set%acc)
    end if
 
    ! ------------------------------------------------------------------------
@@ -655,21 +691,32 @@ subroutine xtbMain(env, argParser)
 
 
    ! ------------------------------------------------------------------------
-   !  ANCopt
+   !> Geometry optimization(ANCopt,L_ANCopt,FIRE)   
+   ! ------------------------------------------------------------------------
    if ((set%runtyp.eq.p_run_opt).or.(set%runtyp.eq.p_run_ohess).or. &
       &   (set%runtyp.eq.p_run_omd).or.(set%runtyp.eq.p_run_screen).or. &
       &   (set%runtyp.eq.p_run_metaopt)) then
+ 
       if (set%opt_engine.eq.p_engine_rf) &
          call ancopt_header(env%unit,set%veryverbose)
+         !! Print ANCopt header
+
       call start_timing(3)
+         !! the system_clock and cpu_time calls for the optimization start
+
       call geometry_optimization &
          &     (env, mol,chk,calc, &
          &      egap,set%etemp,set%maxscciter,set%optset%maxoptcycle,etot,g,sigma,set%optset%optlev,.true.,.false.,murks)
+         !! Optimization
+
+      !> write results
       res%e_total = etot
       res%gnorm = norm2(g)
       if (nscan.gt.0) then
          call relaxed_scan(env,mol,chk,calc)
       endif
+      
+      !> if geo opt fails -> xtblast file
       if (murks) then
          call generateFileName(tmpname, 'xtblast', extension, mol%ftype)
          write(env%unit,'(/,a,1x,a,/)') &
@@ -679,8 +726,10 @@ subroutine xtbMain(env, argParser)
          call close_file(ich)
          call env%terminate("Geometry optimization failed")
       end if
-      call stop_timing(3)
-   endif
+
+      call stop_timing(3) 
+         !! the system_clock and cpu_time calls for the optimization end
+  endif
 
 
    ! ------------------------------------------------------------------------
@@ -743,29 +792,8 @@ subroutine xtbMain(env, argParser)
    ! ------------------------------------------------------------------------
    !> Fukui Index from Mulliken population analysis
    if (set%runtyp.eq.p_run_vfukui) then
-      allocate(f_plus(mol%n),f_minus(mol%n))
-      write(env%unit,'(a)')
-      write(env%unit,'("Fukui index Calculation")')
-      wf_p%wfn=chk%wfn
-      wf_m%wfn=chk%wfn
-      mol%chrg = mol%chrg + 1
-      wf_p%wfn%nel = wf_p%wfn%nel+1
-      if (mod(wf_p%wfn%nel,2).ne.0) wf_p%wfn%nopen = 1
-      call calc%singlepoint(env,mol,wf_p,1,exist,etot2,g,sigma,egap,res)
-      f_plus=wf_p%wfn%q-chk%wfn%q
-
-      mol%chrg = mol%chrg - 2
-      wf_m%wfn%nel = wf_m%wfn%nel-1
-      if (mod(wf_m%wfn%nel,2).ne.0) wf_m%wfn%nopen = 1
-      call calc%singlepoint(env,mol,wf_m,1,exist,etot2,g,sigma,egap,res)
-      f_minus=chk%wfn%q-wf_m%wfn%q
-      write(env%unit,'(a)')
-      write(env%unit, '(1x,"    #        f(+)     f(-)     f(0)")')
-      do i=1,mol%n
-         write(env%unit,'(i6,a4,2f9.3,2f9.3,2f9.3)') i, mol%sym(i), f_plus(i), f_minus(i), 0.5d0*(wf_p%wfn%q(i)-wf_m%wfn%q(i))
-      enddo
-      mol%chrg = mol%chrg + 1
-      deallocate(f_plus,f_minus)
+     allocate(fukui(3,mol%n))
+     call vfukui(env,mol,chk,calc,fukui)
    endif
 
 
@@ -796,6 +824,28 @@ subroutine xtbMain(env, argParser)
    ! reset the gap, since it is currently not updated in ancopt and numhess
    if (allocated(chk%wfn%emo)) then
       res%hl_gap = chk%wfn%emo(chk%wfn%ihomo+1)-chk%wfn%emo(chk%wfn%ihomo)
+   end if
+
+   !> CPCM-X post-SCF solvation
+   if (allocated(calc%solvation)) then
+      if (allocated(calc%solvation%cpxsolvent)) then
+         select type(calc)
+         type is(TxTBCalculator)
+            call generic_header(env%unit,"CPCM-X post-SCF solvation evaluation",49,10)
+            if (set%gfn_method.ne.2) call env%warning("CPCM-X was parametrized for GFN2-xTB. &
+               &The results are probably inaccurate with other methods.")
+            Call cpx%setup(env,calc%solvation%cpxsolvent)
+            Call env%checkpoint("CPCM-X setup terminated")
+            cpxcalc=calc
+            deallocate(cpxcalc%solvation)
+            call cpxcalc%singlepoint(env,mol,chk,1,.false.,energy_gas,g,sigma,egap,res)
+            Call cpx%calc_solv(env,calc%solvation%cpxsolvent,energy_gas,0.4_wp,298.15_wp,500,0.0001_wp,res%e_total)
+            Call cpx%print(set%verbose)
+            Call env%checkpoint("CPCM-X post-SCF solvation evaluation terminated")
+         type is(TGFFCalculator)
+            call env%error("CPCM-X is not possible with a force field.",source)
+         end select
+      end if
    end if
 
    call env%checkpoint("Calculation terminated")
@@ -852,11 +902,12 @@ subroutine xtbMain(env, argParser)
       select type(calc)
       type is(TxTBCalculator)
          call main_property(iprop,env,mol,chk%wfn,calc%basis,calc%xtbData,res, &
-            & calc%solvation,acc)
+            & calc%solvation,set%acc)
          call main_cube(set%verbose,mol,chk%wfn,calc%basis,res)
+      type is(TGFFCalculator)
+         call gfnff_property(iprop,mol%n,mol%xyz,calc%topo,chk%nlist)
       end select
    endif
-
 
    if (set%pr_json) then
       select type(calc)
@@ -870,7 +921,7 @@ subroutine xtbMain(env, argParser)
    if(printTopo%any()) then
      select type(calc)
        type is(TGFFCalculator)
-         call write_json_gfnff_lists(mol%n,calc%topo,chk%nlist,printTopo)
+         call write_json_gfnff_lists(mol%n,res%e_total,res%gnorm,calc%topo,chk%nlist,printTopo)
      end select
    endif
    if ((set%runtyp.eq.p_run_opt).or.(set%runtyp.eq.p_run_ohess).or. &
@@ -1099,13 +1150,13 @@ subroutine xtbMain(env, argParser)
    write(env%unit,'(a)')
    call terminate(0)
 
-
 end subroutine xtbMain
 
 
 !> Parse command line arguments and forward them to settings
-subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
-      & restart, gsolvstate, strict, copycontrol, coffee, printTopo, oniom, tblite)
+subroutine parseArguments(env, args, inputFile, paramFile, lgrad, &
+      & restart, gsolvstate, strict, copycontrol, coffee, printTopo, oniom, dipro,tblite)
+
    use xtb_mctc_global, only : persistentEnv
 
    !> Name of error producer
@@ -1122,9 +1173,6 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
 
    !> Parameter file name
    character(len=:),allocatable,intent(out) :: paramFile
-
-   !> Accuracy number for numerical thresholds
-   real(wp), intent(out) :: accuracy
 
    !> Reference state for solvation free energies
    integer, intent(out) :: gsolvstate
@@ -1150,6 +1198,9 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
    !> Input for ONIOM model
    type(oniom_input), intent(out) :: oniom
 
+   !> Input for DIPRO
+   type(jab_input), intent(inout) :: dipro
+
    !> Stuff for second argument parser
 !   integer  :: narg
 !   character(len=p_str_length), dimension(p_arg_length) :: argv
@@ -1165,14 +1216,15 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
    real(wp) :: ddum
    character(len=:), allocatable :: flag, sec
    logical :: exist
+   
 
    set%gfn_method = 2
+   dipro%diprocalc= .false.
    coffee = .false.
    strict = .false.
    restart = .true.
    copycontrol = .false.
    lgrad = .false.
-   accuracy = 1.0_wp
    gsolvstate = solutionState%gsolv
    tblite%color = get_xtb_feature('color')
 
@@ -1274,16 +1326,16 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
                if (ddum.lt.1.e-4_wp) then
                   call env%warning("We cannot provide this level of accuracy, "//&
                      & "resetted accuracy to 0.0001", source)
-                  accuracy = 1.e-4_wp
+                  set%acc = 1.e-4_wp
                else if (ddum.gt.1.e+3_wp) then
                   call env%warning("We cannot provide this level of accuracy, "//&
                      & "resetted accuracy to 1000", source)
-                  accuracy = 1.e+3_wp
+                  set%acc = 1.e+3_wp
                else
-                  accuracy = ddum
+                  set%acc = ddum
                endif
             end if
-            tblite%accuracy = accuracy
+            tblite%accuracy = set%acc
          else
             call env%error("Accuracy is not provided", source)
          end if
@@ -1345,11 +1397,10 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
             call set_exttyp('tblite')
          else
             call env%error("Compiled without support for tblite library", source)
-            cycle
-         end if
+            return
+         endif
 
       case('--color')
-         call args%nextArg(sec)
          if (allocated(sec)) then
             select case(sec)
             case('auto')
@@ -1365,29 +1416,57 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
             call env%error("No color scheme provided for --color option", source)
          end if
 
+
+      case('--spinpol')
+         if (get_xtb_feature('tblite')) then
+            tblite%spin_polarized = .true.
+         else
+            call env%error("Compiled without support for tblite library. This is required for spin-polarization", source)
+            return
+         end if
+
+      case('--dipro')
+         if (get_xtb_feature('tblite')) then
+            dipro%diprocalc = .true.
+            call set_runtyp('scc')
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec,'(f10.3)')  dipro%othr
+            else
+               dipro%othr = 0.1_wp
+            end if
+         else
+            call env%error("Compiled without support for tblite library. This is required for DIPRO", source)
+            return
+         end if   
+
       case('--oniom')
          call set_exttyp('oniom')
          call args%nextArg(sec) 
 
          !> To handle no argument case
          if (.not.allocated(sec)) then
-            call env%error("No inner region provided for ONIOM", source)
+            call env%error("No inner region is  provided for ONIOM", source)
             return
          end if
          call move_alloc(sec, oniom%first_arg)
 
          call args%nextArg(sec)
          if (.not.allocated(sec)) then 
-            call env%warning("No method is specified for the ONIOM calculation, default gfn2:gfnff combination will be used", source)
+            call env%warning("No method is specified for ONIOM," &
+                  &//achar(10)// " default gfn2:gfnff combination will be used", source)
             call move_alloc(oniom%first_arg, sec)
-            !return
          end if
+         
          inquire(file=sec, exist=exist)
          if (exist) then
             sec = read_whole_file(sec)
          end if
          call move_alloc(sec, oniom%second_arg)
 
+      case('--cut')
+         call set_cut
+      
       case('--etemp')
          call args%nextArg(sec)
          if (allocated(sec)) then
@@ -1415,6 +1494,7 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
 
       case('--json')
          call set_write(env,'json','true')
+         Call setWRtopo("json",printTopo)
        
       case('--ceasefiles')
          restart = .false. 
@@ -1507,6 +1587,7 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
 
       case('--alpb')
          call args%nextArg(sec)
+         call set_gbsa(env, 'alpb', 'true')
          if (allocated(sec)) then
             call set_gbsa(env, 'solvent', sec)
             call args%nextArg(sec)
@@ -1520,14 +1601,14 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
                end if
             end if
          else
-            call env%error("No solvent name provided for GBSA", source)
+            call env%error("No solvent name provided for ALPB", source)
          end if
 
-      case('--cosmo')
+      case('--cosmo','--tmcosmo')
          call args%nextArg(sec)
          if (allocated(sec)) then
             call set_gbsa(env, 'solvent', sec)
-            call set_gbsa(env, 'cosmo', 'true')
+            call set_gbsa(env, flag(3:), 'true')
             call args%nextArg(sec)
             if (allocated(sec)) then
                if (sec == 'reference') then
@@ -1541,6 +1622,21 @@ subroutine parseArguments(env, args, inputFile, paramFile, accuracy, lgrad, &
          else
             call env%error("No solvent name provided for COSMO", source)
          end if
+      
+      case('--cpcmx')
+         if (get_xtb_feature('cpcmx')) then
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               call set_gbsa(env, 'solvent', 'infinity')
+               call set_gbsa(env,'cosmo','true')
+               call set_gbsa(env,'cpcmx',sec)
+            else
+               call env%error("No solvent name provided for CPCM-X", source)
+            end if
+         else
+            call env%error("The CPCM-X library was not included in this version of xTB.", source)
+         end if
+
 
       case('--scc', '--sp')
          call set_runtyp('scc')
@@ -1719,6 +1815,10 @@ subroutine selectList(secSplit, printTopo)
    type(TPrintTopo), intent(inout) :: printTopo
 
    select case(secSplit)
+   case("etot")
+     printTopo%etot = .true.
+   case("gnorm")
+     printTopo%gnorm = .true.
    case("nb")
      printTopo%nb = .true.
    case("bpair")
@@ -1738,6 +1838,19 @@ subroutine selectList(secSplit, printTopo)
    case("hbbond")
       printTopo%hbbond = .true.
    case("eeq")
+      printTopo%eeq = .true.
+   case("json")
+      printTopo%etot = .true.
+      printTopo%gnorm = .true.
+      printTopo%nb = .true.
+      printTopo%bpair = .true.
+      printTopo%alist = .true.
+      printTopo%blist = .true.
+      printTopo%tlist = .true.
+      printTopo%vtors = .true.
+      printTopo%vbond = .true.
+      printTopo%vangl = .true.
+      printTopo%hbbond = .true.
       printTopo%eeq = .true.
    case default
      printTopo%warning = .true.

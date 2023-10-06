@@ -47,7 +47,7 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       logical, intent(in) :: makeneighbor  ! make a neigbor list or use existing one?
 !--------------------------------------------------------------------------------------------------
 
-      integer ati,atj,atk,i,j,k,l,lin,nn,ii,jj,kk,ll,m,rings,ia,ja,ij,ix,nnn,idum,ip,ji,no
+      integer ati,atj,atk,i,j,k,l,lin,nn,ii,jj,kk,ll,m,rings,ia,ja,ij,ix,nnn,idum,ip,ji,no,nbi
       integer ineig,jneig,nrot,bbtyp,ringtyp,nn1,nn2,hybi,hybj,pis,ka,nh,jdum,hcalc,nc
       integer ringsi,ringsj,ringsk,ringl,npi,nelpi,picount,npiall,maxtors,rings4,nheav
       integer nm,maxhb,ki,n13,current,ncarbo,mtyp1,mtyp2
@@ -517,7 +517,7 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
          write(env%unit,*) 'charge 1/2:',topo%qfrag(1:2)
          endif
       endif
-      else if (allocated(mol%pdb)) then ! frag_charges_known
+      else if (allocated(mol%pdb).and.qloop_count.eq.0) then ! frag_charges_known
       if (pr) then
          write(env%unit,'(10x,"#fragments for EEQ constrain from pdb file: ",i0)') topo%nfrag
          endif
@@ -943,16 +943,28 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       if(pr)then
          write(env%unit,'(''Hueckel system :'',i3,'' charge : '',i3,'' ndim/Nel :'',2i5, &
      &         3x, ''eps(HOMO/LUMO)'',2f12.6)')pis,ipis(pis),npi,nelpi,pisip(pis),pisea(pis)
-         if(pisip(pis).gt.0.40) then
-            write(env%unit,*)'WARNING: probably wrong pi occupation. Second attempt with Nel=Nel-1!'
-            do i=1,mol%n
-               if(piadr4(i).ne.0) write(env%unit,*) 'at,nb,topo%hyb,Npiel:', i,mol%sym(i),topo%nb(20,i),topo%hyb(i),piel(i)
-            enddo
-            nelpi=nelpi-1
-            Api = Apisave
-            call gfnffqmsolve(.false.,Api,S,.false.,300.0d0,npi,0,nelpi,dum,occ,eps)  !diagonalize
-            call PREIG(6,occ,1.0d0,eps,1,npi)
-         endif
+      end if
+      if(pisip(pis).gt.0.40) then
+        if(pr)then
+         write(env%unit,'(a,i0,a)')'WARNING: probably wrong pi occupation for system ',pis,'. Second attempt with Nel=Nel-1!'
+         end if
+         do i=1,mol%n
+            if(piadr4(i).ne.0.and.pr) write(env%unit,*) 'at,nb,topo%hyb,Npiel:', i,mol%sym(i),topo%nb(20,i),topo%hyb(i),piel(i)
+         enddo
+         nelpi=nelpi-1
+         Api = Apisave
+         call gfnffqmsolve(.false.,Api,S,.false.,4000.0d0,npi,0,nelpi,dum,occ,eps)  !diagonalize
+         call PREIG(6,occ,1.0d0,eps,1,npi)
+         do i=1,npi  ! save IP/EA
+            if(occ(i).gt.0.5) then
+               pisip(pis)=eps(i)   ! IP
+               if(i+1.lt.npi)pisea(pis)=eps(i+1) ! EA
+            endif
+         enddo
+      if(pr)then
+         write(env%unit,'(''Hueckel system :'',i3,'' charge : '',i3,'' ndim/Nel :'',2i5, &
+     &         3x, ''eps(HOMO/LUMO)'',2f12.6)')pis,ipis(pis),npi,nelpi,pisip(pis),pisea(pis)
+      end if
       endif
 ! save BO
       do i=1,topo%nbond
@@ -1874,6 +1886,27 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       if(pr) write(env%unit,'(10x,"#optfrag :",3x,i0)') topo%nfrag
       !write(env%unit,*) '#optfrag :',nsystem
 
+
+      ! check if triple bonded carbon is present (for torsion term)
+      nn=0
+      do i=1, mol%n
+        if (mol%at(i).eq.6.and.topo%nb(20,i).eq.2) then
+          do j=1, 2
+            nbi=topo%nb(j,i)
+            if (mol%at(nbi).eq.6.and.topo%nb(20,nbi).eq.2) then
+              nn = nn + 1
+            endif
+          enddo
+        endif
+      enddo
+      if (nn.ne.0) then
+        ! fix double counting
+        nn = nn/2
+        allocate(topo%sTorsl(6, nn), source=0)
+        call specialTorsList(nn, mol, topo, topo%sTorsl)
+      endif
+
+
       if(pr)then
       write(env%unit,*)
       write(env%unit,*) 'GFN-FF setup done.'
@@ -1881,6 +1914,98 @@ subroutine gfnff_ini(env,pr,makeneighbor,mol,gen,param,topo,accuracy)
       endif
 
 contains
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! special treatment for rotation around carbon triple bonds
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! requested for obtaining diphenylacetylene torsion potential
+! also applied for e.g. divinylacetylene
+
+! Check for triple bonded carbon (Ci and Cnbi) and setup list for calculating
+!  torsion potential using dehidral angle between C1 C2 C3 C4
+! C--C1                C--C
+!      \              /
+!       C2--Ci-Cnbi--C3
+!      /             \
+! C-- C               C4--C
+!
+! using C1=ii, C2=jj, C3=kk, C4=ll
+subroutine specialTorsList(nst, mol, topo, sTorsList)
+  integer, intent(in) :: nst
+  type(TMolecule), intent(in) :: mol   ! # molecule type
+  type(TGFFTopology), intent(in) :: topo
+  integer, intent(inout) :: sTorsList(6, nst)
+  integer :: i,j,k,ii,jj,kk,ll,idx
+  logical :: iiok, llok
+  ! initialize variables
+  idx=0
+  ii=-1
+  jj=-1
+  kk=-1
+  ll=-1
+
+  do i=1, mol%n
+    ! carbon with two neighbors bonded to other carbon* with two neighbors
+    if (mol%at(i).eq.6.and.topo%nb(20,i).eq.2) then
+      do j=1, 2
+        nbi=topo%nb(j,i)
+        if (mol%at(nbi).eq.6.and.topo%nb(20,nbi).eq.2) then  ! *other carbon
+          ! check carbon triple bond distance
+          if (NORM2(mol%xyz(1:3,i)-mol%xyz(1:3,nbi)).le.2.37) then
+            ! at this point we know that i and nbi are carbons bonded through triple bond
+            ! check C2 and C3
+            do k=1, 2  ! C2 is other nb of Ci
+              if (topo%nb(k,i).ne.nbi.and.mol%at(topo%nb(k,i)).eq.6) then
+                jj=topo%nb(k,i)
+              endif
+            enddo
+            do k=1, 2  ! C3 is other nb of Cnbi
+              if (topo%nb(k,nbi).ne.i.and.mol%at(topo%nb(k,nbi)).eq.6) then
+                kk=topo%nb(k,nbi)
+              endif
+            enddo
+            if (jj.eq.-1.or.kk.eq.-1) then
+              exit ! next atom i
+            endif
+            ! check C1 through C4 are sp2 carbon
+            if (topo%hyb(jj).eq.2.and.topo%hyb(kk).eq.2 &
+            &   .and.mol%at(jj).eq.6.and.mol%at(kk).eq.6) then
+              iiok=.false.
+              llok=.false.
+              ! which of the two valid neighbors is picked as C1 depends
+              !  on atom sorting in input file !!! The last one in file.
+              do k=1, topo%nb(20,jj)
+                if (topo%hyb(k).eq.2.and.mol%at(k).eq.6.and.topo%nb(20,k).eq.3.and. &
+                   & topo%nb(k,jj).ne.i) then
+                  ii=topo%nb(k,jj)
+                  iiok=.true.
+                endif
+              enddo
+              ! which of the two valid neighbors is picked as C4 depends
+              !  on atom sorting in input file !!! The last one in file.
+              do k=1, topo%nb(20,kk)
+                if (topo%hyb(k).eq.2.and.mol%at(k).eq.6.and.topo%nb(20,k).eq.3.and. &
+                   & topo%nb(k,kk).ne.nbi) then
+                  ll=topo%nb(k,kk)
+                  llok=.true.
+                endif
+              enddo
+              if (nbi.gt.i.and.iiok.and.llok) then ! to avoid double counting
+                idx = idx + 1
+                sTorsList(1, idx) = ii  ! C1
+                sTorsList(2, idx) = jj  ! C2
+                sTorsList(3, idx) = i   ! Ci
+                sTorsList(4, idx) = nbi ! Cnbi
+                sTorsList(5, idx) = kk  ! C3
+                sTorsList(6, idx) = ll  ! C4
+              endif
+            endif ! C1-C4 are sp2 carbon
+          endif  ! CC distance
+        endif  ! other carbon
+      enddo
+    endif ! is carbon with nnb=2
+  enddo
+end subroutine specialTorsList
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 

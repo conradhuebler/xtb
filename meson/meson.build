@@ -146,6 +146,11 @@ elif lapack_vendor == 'openblas'
     lib_deps += lapack_dep
   endif
 
+elif lapack_vendor == 'custom'
+  foreach lib: get_option('custom_libraries')
+    lib_deps += fc.find_library(lib)
+  endforeach
+
 else
   lapack_dep = dependency('lapack', required: false)
   if not lapack_dep.found()
@@ -201,3 +206,12 @@ tblite_dep = dependency(
   required: get_option('tblite')
 )
 lib_deps += tblite_dep
+
+# Get CPCM-X
+cpx_dep = dependency(
+  'cpx',
+  fallback: ['cpx', 'cpx_dep'],
+  default_options: ['default_library=static'],
+  required: get_option('cpcmx')
+)
+lib_deps += cpx_dep

@@ -58,6 +58,7 @@ module xtb_gfnff_topology
       integer,allocatable ::  alist(:,:)   ! angles
       integer,allocatable ::  tlist(:,:)   ! torsions
       integer,allocatable :: b3list(:,:)   ! bond atm
+      integer,allocatable :: sTorsl(:,:)
       !-----------------------------------------------
       integer,allocatable :: nr_hb(:)      ! Nr. of H bonds per O-H or N-H bond
       integer,allocatable :: bond_hb_AH(:,:) ! A, H atoms in bonds that are also part of HBs
@@ -101,6 +102,8 @@ module xtb_gfnff_topology
 
    ! logicals for GFN-FF topology list printout
    type :: TPrintTopo
+     logical :: etot    = .false.
+     logical :: gnorm   = .false.
      logical :: nb      = .false.
      logical :: bpair   = .false.
      logical :: alist   = .false.
@@ -110,7 +113,7 @@ module xtb_gfnff_topology
      logical :: vbond   = .false.
      logical :: vangl   = .false.
      logical :: hbbond  = .false.
-     logical :: eeq  = .false.
+     logical :: eeq     = .false.
      logical :: warning = .false.
 
    contains
@@ -152,7 +155,7 @@ function any(self) result(tf)
 
   tf = self%nb.or.self%bpair.or.self%alist.or.self%blist.or. &
      & self%tlist.or.self%vtors.or.self%vbond.or.self%vangl.or. &
-     & self%hbbond.or.self%eeq
+     & self%hbbond.or.self%eeq.or.self%etot.or.self%gnorm
 end function any
 
 end module xtb_gfnff_topology

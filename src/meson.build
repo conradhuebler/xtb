@@ -17,6 +17,7 @@
 
 subdir('api')
 subdir('coulomb')
+subdir('dipro')
 subdir('disp')
 subdir('docking')
 subdir('extern')
@@ -56,6 +57,7 @@ srcs += files(
   'define.f90',
   'detrotra.f90',
   'dipole.f90',
+  'dipro.F90',
   'drsp.f',
   'dtrafo.f90',
   'dynamic.f90',
@@ -147,6 +149,7 @@ srcs += files(
   'thermo.f90',
   'timing.f90',
   'topology.f90',
+  'vertical.f90',
   'wrbas.f90',
   'wrgbw.f90',
   'wrmodef.f90',

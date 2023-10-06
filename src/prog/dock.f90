@@ -108,6 +108,17 @@ contains
 
       !> Print an informative banner
       call dockingHeader(env%unit)
+      !> make sure you cannot blame us for destroying your computer
+      call disclamer(env%unit)
+      !> Citations
+      write(env%unit,'(3x,a)') &
+        "Cite this work as:", &
+        "* C. Plett, S. Grimme, Angew. Chem. Int. Ed. 2023, 62, e202214477.",&
+        "DOI: 10.1002/anie.202214477",&
+        ""
+
+      !> Check .CHRG, .UHF
+      call check_for_files(env)
 
       !> Parse arguments
       call parseArguments(env, argParser, fname)
@@ -156,6 +167,14 @@ contains
       call reader%close
       call env%checkpoint("Could not read geometry from '"//fnameB//"'")
 
+      !> Set molecular charges
+      molA%chrg = chrg(1)
+      molB%chrg = chrg(2)
+
+      !> Set molecular charges
+      molA%uhf = uhf(1)
+      molB%uhf = uhf(2)
+
       !> Print current time
       call prdate('S')
 
@@ -165,9 +184,6 @@ contains
       !> Set some parameter
       call set_iff_param
       fnam = 'xtblmoinfo'
-
-      !> Check .CHRG, .UHF and xcontrol
-      call check_for_files(env, molA, molB)
 
       !> Printout Settings
       call dockingPrintout(env%unit, fnameA, fnameB, molA, molB)
@@ -658,7 +674,7 @@ contains
          "     |                   =====================                   |", &
          "     |                          a I S S                          |", &
          "     |                   =====================                   |", &
-         "     |               S. Ehlert, S. Grimme, C.Plett               |", &
+         "     |               C. Plett, S. Ehlert, S. Grimme              |", &
          "     |          Mulliken Center for Theoretical Chemistry        |", &
          "     |                    University of Bonn                     |", &
          "      -----------------------------------------------------------", ""
@@ -760,12 +776,10 @@ contains
 
    end subroutine dockingHelp
 
-   subroutine check_for_files(env, molA, molB)
+   subroutine check_for_files(env)
 
       !> Calculation environment
       type(TEnvironment), intent(inout) :: env
-      !> Molecular structure data
-      type(TMolecule), intent(inout) :: molA, molB
 
       character(len=*), parameter :: source = "iff_file_read"
 
@@ -791,7 +805,7 @@ contains
             call env%warning('.CHRG has only one line!')
          else
             if (getValue(env, cdum, charge)) then
-               molA%chrg = charge
+               chrg(1) = charge
             end if
          end if
          !> Charge molB
@@ -800,7 +814,7 @@ contains
             call env%warning('.CHRG has only two lines!')
          else
             if (getValue(env, cdum, charge)) then
-               molB%chrg = charge
+               chrg(2) = charge
             end if
          end if
 
@@ -812,12 +826,17 @@ contains
       !> Number of unpaired electrons
       call open_file(ich, '.UHF', 'r')
       if (ich .ne. -1) then
+         !> Total number
+         call getline(ich, cdum, iostat=err)
+         if (err /= 0) then
+            call env%error('.UHF is empty!', source)
+         end if
          call getline(ich, cdum, iostat=err)
          if (err /= 0) then
             call env%error('.UHF is empty!', source)
          else
             if (getValue(env, cdum, elect)) then
-               molA%uhf = elect
+               uhf(1) = elect
             end if
          end if
          call getline(ich, cdum, iostat=err)
@@ -825,7 +844,7 @@ contains
             call env%warning('.UHF has only one line!')
          else
             if (getValue(env, cdum, elect)) then
-               molB%uhf = elect
+               uhf(2) = elect
             end if
          end if
          call close_file(ich)
@@ -964,6 +983,7 @@ contains
             select case(line(2:))
             case('directed'      )
                if (set%verbose) write(env%unit,'(">",1x,a)') line(2:)
+               directedset%fc = 1.0_wp !Default scaling. Can be changed by user
                call rdblock_docking2(env,set_directed,line,id,mol%n,mol%at,idMap,mol%xyz,err)
             case default ! unknown keyword -> ignore, we don't raise them
                call getline(id,line,err)
@@ -1012,7 +1032,7 @@ contains
       end do
       !> Changing the distance to a repulsive potential sitting on every atom other then
       !  the defined docking atoms. This potentail is a damped exponential increase.
-      !  It is later in the energy calculation and RG screening added in sitance depdence to
+      !  It is later in the energy calculation and RG screening added in distance depdence to
       !  docked molecule via 1/r²
       do i=1, comb%n
          if(any(i == directedset%atoms)) cycle !Potential zero for atoms in defined docking region
@@ -1020,6 +1040,7 @@ contains
          rep_pot = 0.1*erf(0.07 * dist - 0.28) !Potential starts at distance of 4
          if(rep_pot < 0.0_wp) rep_pot = 0.0_wp
          directedset%val(i) = rep_pot !Overwrite distance with repulsive Potential
+         directedset%val(i) = directedset%val(i) * directedset%fc !Scaling if requested
       end do
    end subroutine get_repulsive_pot
 
@@ -1038,6 +1059,7 @@ contains
       do i = 1, comb%n
          if(any(i == directedset%atoms)) then
            directedset%val(i) = attractive_pot !attractive pot is negative
+           directedset%val(i) = directedset%val(i) * directedset%fc !Scaling if requested
          else 
            directedset%val(i) = 0.0_wp
          end if

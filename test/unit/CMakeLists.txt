@@ -34,13 +34,17 @@ set(
   "iff"
   "latticepoint"
   "molecule"
+  "oniom"
+  "dipro"
   "pbc-tools"
   "peeq"
   "repulsion"
   "symmetry"
   "tblite"
   "thermo"
+  "vertical"
   "wsc"
+  "cpx"
 )
 set(
   test-srcs
